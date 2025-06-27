@@ -2,8 +2,8 @@
 # vi: set ft=ruby :
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "bento/ubuntu-18.04"
-  config.vm.box_version ='201912.14.0'
+  config.vm.box = "bento/ubuntu-22.04"
+  config.vm.box_version = "202502.21.0"
   config.vm.hostname = 'k8s-dev'
   config.vm.define vm_name = 'k8s'
 
@@ -15,9 +15,9 @@ Vagrant.configure("2") do |config|
     sudo apt-get update
     sudo apt-get install -y vim git build-essential tcpdump tig jq bash-completion yamllint shellcheck unzip
     # Install Docker
-    export DOCKER_VERSION="5:19.03.5~3-0~ubuntu-bionic"
+    export DOCKER_VERSION="5:28.3.0-1~ubuntu.22.04~jammy"
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+    sudo add-apt-repository "deb [arch=arm64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
     sudo apt-get update
     sudo apt-get install -y docker-ce=${DOCKER_VERSION}
     sudo usermod -aG docker $USER
@@ -31,18 +31,29 @@ Vagrant.configure("2") do |config|
     git clone https://github.com/hwchiu/hiskio-gitops-demo.git
 
     sudo apt-get update && sudo apt-get install -y apt-transport-https curl
-    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
-    echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee --append /etc/apt/sources.list.d/kubernetes.list
+    # 建立 GPG 金鑰目錄
+    sudo mkdir -p /etc/apt/keyrings
+    # 使用新的 Kubernetes 套件儲存庫
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
     sudo apt-get update
     sudo apt-get install -y kubectl
 
-    wget https://github.com/rancher/k3d/releases/download/v4.2.0/k3d-linux-amd64
-    sudo chmod 755 k3d-linux-amd64
-    sudo mv k3d-linux-amd64 /usr/local/bin/k3d
+    # wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/v5.7.5/install.sh | bash
+    wget https://github.com/rancher/k3d/releases/download/v5.7.5/k3d-linux-arm64
+    sudo chmod 755 k3d-linux-arm64
+    sudo mv k3d-linux-arm64 /usr/local/bin/k3d
 
-    sudo k3d cluster create -s 1 -p 8080:80@loadbalancer dev
-    sudo k3d cluster create -s 1 -p 8081:80@loadbalancer stage
-    sudo k3d cluster create -s 1 -p 8082:80@loadbalancer prod
+    # 增加 ulimit 以避免檔案限制問題
+    ulimit -n 65536
+
+    # 建立多個 k3d 叢集，並在每個建立之間加入延遲以避免資源衝突
+    sudo k3d cluster create -s 1 -p 8080:80@loadbalancer dev --wait --timeout 300s
+    sleep 10
+    sudo k3d cluster create -s 1 -p 8081:80@loadbalancer stage --wait --timeout 300s
+    sleep 10
+    sudo k3d cluster create -s 1 -p 8082:80@loadbalancer prod --wait --timeout 300s
+    sleep 10
 
     echo 'source <(kubectl completion bash)' >> ~/.bashrc
 
@@ -50,19 +61,21 @@ Vagrant.configure("2") do |config|
     bash ~/.bash_it/install.sh -s
 
     set -x; cd "$(mktemp -d)" &&
-    curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/download/v0.4.2/krew-linux_amd64.tar.gz"
-    tar zxvf krew-linux_amd64.tar.gz &&
-    ./krew-linux_amd64 install krew
+    curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/download/v0.4.2/krew-linux_arm64.tar.gz"
+    tar zxvf krew-linux_arm64.tar.gz &&
+    ./krew-linux_arm64 install krew
     curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
 
+    mkdir -p ~/.kube
+    touch ~/.kube/config
     sudo chmod 755 ~/.kube/config
     sudo chown -R vagrant:vagrant ~/.kube
  SHELL
 
   config.vm.network :private_network, ip: "172.17.8.111"
-  config.vm.provider :virtualbox do |v|
-      v.customize ["modifyvm", :id, "--cpus", 3]
-      v.customize ["modifyvm", :id, "--memory", 4096]
-      v.customize ['modifyvm', :id, '--nicpromisc1', 'allow-all']
+  config.vm.provider "vmware_fusion" do |v|
+    v.vmx["memsize"] = "4096"
+    v.vmx["numvcpus"] = "4"
+    v.vmx["ethernet0.noPromisc"] = "FALSE"
   end
 end
